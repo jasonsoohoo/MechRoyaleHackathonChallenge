@@ -1,7 +1,7 @@
 {
   "adaptive": true,
   "energy_reserve": 0.3,
-  "engagement_range": 85,
+  "engagement_range": 100,
   "exploit": false,
   "exposure_weight": 3,
   "retreat_hp_fraction": 0.54,
