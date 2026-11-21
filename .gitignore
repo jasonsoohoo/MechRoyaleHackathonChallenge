@@ -10,4 +10,5 @@ artifacts/
 *.db
 /handoff-local/
 /AGENTS.md
+/MILESTONES.md
 

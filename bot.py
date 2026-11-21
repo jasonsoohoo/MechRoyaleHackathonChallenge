@@ -1,9 +1,12 @@
 """Mech Royale Phase 1: deterministic survival and ranged-combat baseline."""
 import math
+import json
+from pathlib import Path
 
 import mechfight as mf
 from arena import Arena
 from navigation import Navigator
+from tactics import Tactics
 
 
 def angle_delta(a, b):
@@ -38,6 +41,18 @@ class Bot:
             raise ValueError('unsupported protocol')
         self.cfg = hello['config']
         self.slot = hello['slot']
+        policy = json.loads(Path(__file__).with_name('policy.json').read_text())
+        limits = {'retreat_hp_fraction': (.2, .75), 'engagement_range': (50, 105),
+                  'zone_lead_seconds': (4, 24), 'exposure_weight': (0, 8), 'energy_reserve': (.1, .7)}
+        if policy.get('version') != 1 or set(policy) != set(limits) | {'version','adaptive','exploit'}:
+            raise ValueError('unsupported tactical policy')
+        if any(type(policy[k]) is not bool for k in ('adaptive','exploit')):
+            raise ValueError('invalid tactic switch')
+        self.tactics = Tactics()
+        for key, (low, high) in limits.items():
+            if type(policy[key]) not in (float, int) or not low <= policy[key] <= high:
+                raise ValueError(f'invalid tactical parameter: {key}')
+        self.policy = policy
         self.arena = Arena(hello['map'])
         self.nav = Navigator(self.arena)
         self.priorities = {k: i for i, k in enumerate((
@@ -60,14 +75,14 @@ class Bot:
         if obs['offer']:
             action['pick'] = min(range(len(obs['offer']['choices'])),
                                  key=lambda i: self.priorities.get(obs['offer']['choices'][i]['id'], 100))
-        hurt = me['hp'] < .45*me['max_hp']
+        hurt = me['hp'] < self.policy['retreat_hp_fraction']*me['max_hp']
         enemies = sorted((m for m in obs['mechs'] if m['kind'] == 'mech'),
                          key=lambda m: (math.dist(pos[:2], m['pos'][:2]), m['id']))
         nearest = enemies[0] if enemies else None
         threat = nearest and math.dist(pos[:2], nearest['pos'][:2]) < 110
         # Seek the next circle early when the travel time consumes the remaining hold.
         travel = max(0, math.dist(pos[:2], zone['next_center'])-zone['next_radius']) / stats['walk_speed']
-        urgent = not me['in_zone'] or obs['t']+travel+12 >= zone['shrink_start']
+        urgent = not me['in_zone'] or obs['t']+travel+self.policy['zone_lead_seconds'] >= zone['shrink_start']
         center = zone['next_center'] if urgent else zone['center']
         radius = zone['next_radius'] if urgent else zone['radius']
         goal = list(center)
@@ -105,22 +120,28 @@ class Bot:
             radial = Navigator.unit(enemy, pos)
             sign = 1 if self.slot % 2 else -1
             # Strafe at gun range; do not voluntarily enter lightning range.
-            goal = [pos[0]+radial[0]*(85-distance)-sign*radial[1]*25,
-                    pos[1]+radial[1]*(85-distance)+sign*radial[0]*25]
+            correction = self.policy['engagement_range'] - distance
+            goal = [pos[0]+radial[0]*correction-sign*radial[1]*25,
+                    pos[1]+radial[1]*correction+sign*radial[0]*25]
             d = math.dist(goal, center)
             if d > safe_radius:
                 goal = [center[i]+(goal[i]-center[i])*safe_radius/max(d, 1) for i in range(2)]
-        action['move'] = self.nav.direction(pos, goal, stats)
         # Reserve energy for escaping; routine travel is walking.
         action['boost'] = bool(me['grounded'] and me['energy'] > .3*me['max_energy']
                                and (not me['in_zone'] or (hurt and threat)))
         action['jump'] = False
+        mode, preferred = None, None
+        if self.policy['adaptive']:
+            goal,mode,preferred = self.tactics.decide(obs,enemies,self.cfg,self.policy,self.arena,goal,action)
+        action['move'] = self.nav.direction(pos, goal, stats)
         muzzle = [pos[0], pos[1], pos[2]+stats['muzzle_height']]
         candidates = list(enemies)
+        if preferred:
+            candidates = [preferred]+[m for m in enemies if m['id'] != preferred['id']]
         if not hurt and not threat and me['in_zone']:
             candidates += sorted(obs['crates'], key=lambda c: (math.dist(pos, c['pos']), c['id']))
         target = None
-        for candidate in candidates:
+        for candidate in candidates[:4] if mode != 'recover' else ():
             _, height = self.actor_shape(candidate)
             point = [*candidate['pos'][:2], candidate['pos'][2]+height*.5]
             if math.dist(muzzle, point) < max(w['stats'].get('range', 0) for w in me['weapons'] if w) and self.arena.line_clear(muzzle, point):
@@ -157,7 +178,7 @@ class Bot:
                 elif kind == 'lightning':
                     action['fire'][i] = bool(clear and in_range and me['energy'] >= ws['energy']
                                               and abs(angle_delta(yaw, me['aim'][0])) < math.radians(ws['cone_deg']))
-        else:
+        elif 'aim' not in action:
             # Scan reproducibly; keep facing a recent attacker when retreating.
             bearing = next((e['bearing'] for e in reversed(obs['events'])
                             if e['type'] == 'damaged' and e.get('bearing') is not None), None)
