@@ -106,6 +106,28 @@ class Tactics:
             offset=60 if mode=="recover" else preferred-tr["distance"]
             side=1 if me["id"]%2 else -1
             goal=[pos[0]+away[0]*offset-side*away[1]*18,pos[1]+away[1]*offset+side*away[0]*18]
+        # The circle center attracts several observed tracks. Use an interior
+        # shoulder while there is room to disengage, and return to ordinary duel
+        # positioning as the available space disappears. No team labels needed.
+        if policy.get("perimeter") and mode!="loot" and zone["radius"]>2*s["walk_speed"]:
+            advance=min(1.,max(0.,(t+8-zone["shrink_start"])/max(1,zone["shrink_end"]-zone["shrink_start"])))
+            anchor=[current[i]+advance*(future[i]-current[i]) for i in range(2)]
+            safe_radius=zone["radius"]+(zone["next_radius"]-zone["radius"])*advance
+            stand_off=max(0.,safe_radius-s["walk_speed"]*1.6)
+            dx,dy=direction(anchor,pos)
+            # Move toward the predicted circle along the nearest radial approach.
+            if mode=="rotate" and (radial>.6*safe_radius or urgent):
+                goal=[anchor[0]+dx*stand_off*.85,anchor[1]+dy*stand_off*.85]
+            if not urgent and mode in ("recover","engage") and len(threats)>=2:
+                candidates=[]
+                for angle in (-.7,-.35,0.,.35,.7):
+                    ux=dx*math.cos(angle)-dy*math.sin(angle)
+                    uy=dx*math.sin(angle)+dy*math.cos(angle)
+                    loc=[anchor[0]+ux*.88*stand_off,anchor[1]+uy*.88*stand_off]
+                    if not arena.clear_body(*loc,arena.height(*loc),s): continue
+                    closest=min(math.dist(loc,m["pos"][:2]) for m in threats)
+                    candidates.append((closest-.55*math.dist(loc,pos[:2]),loc))
+                if candidates: goal=max(candidates)[1]
         # Compare escape directions against up to three opponents. Only a single new
         # geometric ray is computed per decision; cached and unknown lanes are conservative.
         if threats and (len(threats)>1 or mode=="recover" or threats[0].get("charging")):

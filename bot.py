@@ -44,9 +44,10 @@ class Bot:
         policy = json.loads(Path(__file__).with_name('policy.json').read_text())
         limits = {'retreat_hp_fraction': (.2, .75), 'engagement_range': (50, 105),
                   'zone_lead_seconds': (4, 24), 'exposure_weight': (0, 8), 'energy_reserve': (.1, .7)}
-        if policy.get('version') != 1 or set(policy) != set(limits) | {'version','adaptive','exploit'}:
+        policy.setdefault('perimeter', False)
+        if policy.get('version') != 1 or set(policy) != set(limits) | {'version','adaptive','exploit','perimeter'}:
             raise ValueError('unsupported tactical policy')
-        if any(type(policy[k]) is not bool for k in ('adaptive','exploit')):
+        if any(type(policy[k]) is not bool for k in ('adaptive','exploit','perimeter')):
             raise ValueError('invalid tactic switch')
         self.tactics = Tactics()
         for key, (low, high) in limits.items():
