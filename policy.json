@@ -1,10 +1,10 @@
 {
-  "version": 1,
-  "retreat_hp_fraction": 0.45,
-  "engagement_range": 85,
-  "zone_lead_seconds": 12,
-  "energy_reserve": 0.3,
-  "exposure_weight": 3,
   "adaptive": true,
-  "exploit": true
+  "energy_reserve": 0.3,
+  "engagement_range": 85,
+  "exploit": false,
+  "exposure_weight": 3,
+  "retreat_hp_fraction": 0.54,
+  "version": 1,
+  "zone_lead_seconds": 12
 }
