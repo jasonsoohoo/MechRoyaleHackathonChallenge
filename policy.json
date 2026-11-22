@@ -4,7 +4,7 @@
   "engagement_range": 100,
   "exploit": false,
   "exposure_weight": 5,
-  "retreat_hp_fraction": 0.54,
+  "retreat_hp_fraction": 0.62,
   "version": 1,
   "zone_lead_seconds": 12
 }
