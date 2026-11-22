@@ -512,6 +512,9 @@ def _reader(q, stream) -> None:
                 continue
             if isinstance(msg, dict):
                 messages.append(msg)
+                if msg.get("type") == "end":
+                    q.put(messages)
+                    return
         if messages:
             q.put(messages)
         if not chunk:
