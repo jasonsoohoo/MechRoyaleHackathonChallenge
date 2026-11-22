@@ -28,6 +28,47 @@ def edge_distance(x, y, ring):
     return math.sqrt(best)
 
 
+class RingIndex:
+    """Only edges spanning the query's horizontal strip can intersect the body."""
+    strip = 8.
+
+    def __init__(self, ring):
+        xs, ys = ring[::2], ring[1::2]
+        self.bounds = min(xs), max(xs), min(ys), max(ys)
+        self.rows = {}
+        for i in range(0, len(ring), 2):
+            j = (i+2) % len(ring)
+            ax, ay, bx, by = ring[i], ring[i+1], ring[j], ring[j+1]
+            dx, dy = bx-ax, by-ay
+            edge = (ax, ay, bx, by, dx, dy, max(1e-12, dx*dx+dy*dy))
+            for row in range(math.floor(min(ay, by)/self.strip), math.floor(max(ay, by)/self.strip)+1):
+                self.rows.setdefault(row, []).append(edge)
+
+    def in_bounds(self, x, y, pad=0.):
+        left, right, bottom, top = self.bounds
+        return left-pad <= x <= right+pad and bottom-pad <= y <= top+pad
+
+    def contains(self, x, y):
+        if not self.in_bounds(x, y):
+            return False
+        hit = False
+        for ax, ay, bx, by, dx, dy, _ in self.rows.get(math.floor(y/self.strip), ()):
+            # Use the original ray-crossing operation order and endpoint convention.
+            if (by > y) != (ay > y) and x < (ax-bx)*(y-by)/(ay-by)+bx:
+                hit = not hit
+        return hit
+
+    def near_edge(self, x, y, r):
+        for row in range(math.floor((y-r)/self.strip), math.floor((y+r)/self.strip)+1):
+            for ax, ay, bx, by, dx, dy, length2 in self.rows.get(row, ()):
+                if (ax < x-r and bx < x-r) or (ax > x+r and bx > x+r):
+                    continue
+                t = max(0, min(1, ((x-ax)*dx+(y-ay)*dy)/length2))
+                if (x-ax-t*dx)**2 + (y-ay-t*dy)**2 < r*r:
+                    return True
+        return False
+
+
 class Arena:
     bucket_size = 24
 
@@ -47,6 +88,7 @@ class Arena:
         self.buckets = {}
         for index, p in enumerate(self.prisms):
             xs, ys = p['ring'][::2], p['ring'][1::2]
+            p['collision_rings'] = [RingIndex(ring) for ring in [p['ring'], *p['holes']]]
             for i in range(math.floor(min(xs)/24), math.floor(max(xs)/24)+1):
                 for j in range(math.floor(min(ys)/24), math.floor(max(ys)/24)+1):
                     self.buckets.setdefault((i, j), []).append(index)
@@ -80,9 +122,17 @@ class Arena:
         for p in self.nearby(x, y, r):
             if p['top'] <= z + stats['step_up'] or p['base'] >= z + height:
                 continue
-            if self.footprint(p, x, y) or edge_distance(x, y, p['ring']) < r:
+            rings = p.get('collision_rings')
+            if rings is None:
+                rings = [RingIndex(ring) for ring in [p['ring'], *p['holes']]]
+                p['collision_rings'] = rings
+            outer = rings[0]
+            if not outer.in_bounds(x, y, r):
+                continue
+            if outer.near_edge(x, y, r):
                 return False
-            if any(inside(x, y, h) and edge_distance(x, y, h) < r for h in p['holes']):
+            holes = [ring for ring in rings[1:] if ring.contains(x, y)]
+            if (not holes and outer.contains(x, y)) or any(h.near_edge(x, y, r) for h in holes):
                 return False
         return True
 

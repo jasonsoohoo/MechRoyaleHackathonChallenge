@@ -29,6 +29,7 @@ import json
 import queue
 import sys
 import threading
+import time
 import traceback
 from typing import Any, Dict, List, Literal, Optional, TypedDict, Union
 
@@ -495,38 +496,55 @@ def _send(msg: Dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def _reader(q: "queue.Queue[Optional[str]]") -> None:
-    for line in sys.stdin:
-        if line.strip():
-            q.put(line)
-    q.put(None)
+def _reader(q, stream) -> None:
+    # Publish all complete records from one pipe read together. A JSON line may
+    # span reads, including in the middle of a UTF-8 character.
+    pending = b""
+    while True:
+        chunk = stream.read1(65536)
+        lines = (pending + chunk).split(b"\n")
+        pending = lines.pop() if chunk else b""
+        messages = []
+        for line in lines:
+            try:
+                msg = json.loads(line)
+            except (ValueError, UnicodeError):
+                continue
+            if isinstance(msg, dict):
+                messages.append(msg)
+        if messages:
+            q.put(messages)
+        if not chunk:
+            q.put([{"type": "end"}])
+            return
 
 
 def run(make_bot: Any) -> None:
     """Run a bot until the match ends. `make_bot(hello)` returns an object with `act(obs) -> Action`
     and optionally `name`. A class works: `run(MyBot)`."""
-    q: "queue.Queue[Optional[str]]" = queue.Queue()
-    threading.Thread(target=_reader, args=(q,), daemon=True).start()
+    q = queue.Queue()
+    threading.Thread(target=_reader, args=(q,sys.stdin.buffer), daemon=True).start()
     bot = None
     last: Dict[str, Any] = {}
     errors = 0
+    last_tick = -1
+    settle = 0.
+    batch = []
     while True:
-        batch = [q.get()]
+        if not batch:
+            batch = q.get()
+        started = time.monotonic()
         while True:  # drain the queue: only the newest observation matters
             try:
-                batch.append(q.get_nowait())
+                batch.extend(q.get_nowait())
             except queue.Empty:
                 break
         latest = None
-        for raw in batch:
-            if raw is None:
-                return
-            try:
-                msg = json.loads(raw)
-            except ValueError:
-                continue
+        for msg in batch:
             kind = msg.get("type")
             if kind == "hello":
+                last_tick, last, latest = -1, {}, None
+                settle = min(.001, msg["config"]["bot"]["tick_budget_ms"] / 20000)
                 draw.caps = msg.get("config", {}).get("debug", {})
                 try:
                     bot = make_bot(msg)
@@ -534,10 +552,11 @@ def run(make_bot: Any) -> None:
                     log(traceback.format_exc())
                 name = getattr(bot, "name", None) or getattr(make_bot, "__name__", "bot")
                 _send({"type": "ready", "name": str(name)[:32]})
-            elif kind == "obs":
+            elif kind == "obs" and msg["tick"] > last_tick and (latest is None or msg["tick"] >= latest["tick"]):
                 latest = msg
             elif kind == "end":
                 return
+        batch = []
         if latest is None:
             continue
         action: Dict[str, Any] = {}
@@ -545,21 +564,34 @@ def run(make_bot: Any) -> None:
         if bot is not None:
             try:
                 action = dict(bot.act(latest) or {})
-                last = {k: action[k] for k in _CONTINUOUS if k in action}
             except Exception:
                 errors += 1
                 if errors <= 5 or errors % 100 == 0:
                     log(f"act() failed at tick {latest['tick']} ({errors} so far):\n{traceback.format_exc()}")
                 action = dict(last)
+        # While act() was running a newer tick may have arrived. Short actions
+        # leave up to 1 ms from batch receipt for a fragmented burst to finish.
+        try:
+            batch = q.get(timeout=max(0., started + settle - time.monotonic()))
+            while True:
+                batch.extend(q.get_nowait())
+        except queue.Empty:
+            pass
+        if any(m.get("type") in ("hello","end") or
+               (m.get("type")=="obs" and m["tick"]>latest["tick"]) for m in batch):
+            continue
+        batch = []
         action["tick"] = latest["tick"]
         d = draw.take()
         if d and "debug" not in action:
             action["debug"] = d
         try:
             _send(action)
+            last = {k: action[k] for k in _CONTINUOUS if k in action}
         except (TypeError, ValueError):  # something in the action isn't JSON
             log(f"unserializable action at tick {latest['tick']}:\n{traceback.format_exc()}")
             _send({"tick": latest["tick"], **last})
+        last_tick = latest["tick"]
 
 
 if __name__ == "__main__":
