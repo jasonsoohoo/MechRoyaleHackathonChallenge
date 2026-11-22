@@ -3,7 +3,7 @@
   "energy_reserve": 0.3,
   "engagement_range": 100,
   "exploit": false,
-  "exposure_weight": 3,
+  "exposure_weight": 5,
   "retreat_hp_fraction": 0.54,
   "version": 1,
   "zone_lead_seconds": 12
